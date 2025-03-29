@@ -1,0 +1,8 @@
+<data>
+    <span t-if="show">
+        hello
+    </span>
+    <span t-if="not(show)">
+        boo
+    </span>
+</data>

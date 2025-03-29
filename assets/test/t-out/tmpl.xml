@@ -1,0 +1,7 @@
+<data>
+    <span t-out="value"/>
+    <span>
+        <t t-out="value"/>
+    </span>
+    <t t-out="emptyValue"/>
+</data>
