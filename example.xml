@@ -1,0 +1,14 @@
+<templates>
+    1
+    <t>
+      dsfg
+    </t>
+    <div>
+        <span t-out="item"/>
+    </div>
+    2
+    <div>
+        <t t-out="item"/>
+    </div>
+    3
+</templates>
