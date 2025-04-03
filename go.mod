@@ -1,4 +1,4 @@
-module qweb
+module github.com/TesaLazarenko/qweb
 
 go 1.24
 
