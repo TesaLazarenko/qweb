@@ -268,6 +268,6 @@ func RenderString(root *Node, ctx RenderContext) (string, error) {
 }
 
 func RemoveComment(data string) string {
-	pattern := regexp.MustCompile(`\n +?<!--.*?-->`)
+	pattern := regexp.MustCompile(`\n( +)?<!--.*?-->`)
 	return pattern.ReplaceAllString(data, "")
 }
