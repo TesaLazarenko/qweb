@@ -1,6 +1,9 @@
 <data>
+    <t t-foreach="items" t-as="item" t-out="item"/>
     <ul>
-        <li t-foreach="items" t-as="item" t-out="item"/>
+        <t t-foreach="items" t-as="item">
+            <li t-out="item"/>
+        </t>
     </ul>
-    <t t-foreach="items" t-as="item"><span t-out="item"/></t>
+    <span t-foreach="items" t-as="item" t-out="item"/>
 </data>
