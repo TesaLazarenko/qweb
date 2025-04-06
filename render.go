@@ -5,12 +5,10 @@ import (
 	"encoding/xml"
 	"fmt"
 	"github.com/pkg/errors"
-	"io"
-	"log"
 	"maps"
 	"reflect"
-	"regexp"
 	"strings"
+	"weak"
 )
 
 const (
@@ -23,69 +21,80 @@ const (
 
 type RenderContext map[string]any
 
-type Renderer struct {
-	Indent  int
-	Encoder *xml.Encoder
+type RenderResponse struct {
+	Pass     bool
+	Skip     bool
+	Rendered bool
+	Error    error
 }
 
-func (r *Renderer) WriteCharData(node *Node) (bool, error) {
-	if node.Name != "::text" {
-		return false, nil
+func normalizeTextNodeIndent(src *Node, dst *Node) {
+	if src == nil {
+		return
 	}
-	err := errors.WithStack(r.Encoder.EncodeToken(xml.CharData(node.Content)))
-	return true, err
-}
-
-func (r *Renderer) WriteComment(node *Node) (bool, error) {
-	if node.Name != "::comment" {
-		return false, nil
+	if dst == nil {
+		return
 	}
-	err := errors.WithStack(r.Encoder.EncodeToken(xml.Comment(node.Content)))
-	return true, err
+	srcNodes := src.Parent.Value().Nodes
+	dstNodes := dst.Parent.Value().Nodes
+	if !(len(srcNodes) > 0 && len(dstNodes) > 0) {
+		return
+	}
+	lastSrcNode := srcNodes[len(srcNodes)-1]
+	lastDstNode := dstNodes[len(dstNodes)-1]
+	if lastSrcNode.Name == "::text" && lastDstNode.Name == "::text" {
+		dstNodes[len(dstNodes)-1].Content = lastSrcNode.Content
+	}
 }
 
-func (r *Renderer) WriteCommentWithValue(msg string) error {
-	_, err := r.WriteComment(&Node{
-		Name:    "::comment",
-		Content: msg,
-	})
-	return err
-}
-
-func (r *Renderer) WriteTOut(ctx RenderContext, node *Node) (bool, error) {
-	attrValue, ok := node.TAttrs[TOut]
+func renderOut(ctx RenderContext, src *Node, dst *Node) RenderResponse {
+	attrValue, ok := src.TAttrs[TOut]
 	if !ok {
-		return false, nil
+		return RenderResponse{
+			Pass: true,
+		}
 	}
 	var fineValue string
 	val, err := Eval[any](ctx, attrValue)
 	if err != nil {
-		return false, err
+		return RenderResponse{
+			Error: err,
+		}
 	}
 	if reflect.TypeOf(val).Kind() == reflect.String {
 		fineValue = val.(string)
 	} else {
 		fineValue = fmt.Sprintf("%v", val)
 	}
-	if fineValue == "" {
-		if err := r.WriteCommentWithValue("::render: invisible"); err != nil {
-			return false, err
+	if fineValue == "" && src.Name == "t" {
+		normalizeTextNodeIndent(src, dst)
+		return RenderResponse{
+			Skip: true,
 		}
-		return false, nil
+	} else if fineValue == "" {
+		return RenderResponse{
+			Pass: true,
+		}
 	}
-	if err := r.Encoder.EncodeToken(xml.CharData(fineValue)); err != nil {
-		return false, errors.WithStack(err)
+	if src.Name == "t" {
+		newNode := &Node{
+			Name:    "::text",
+			Content: fineValue,
+		}
+		newNode.Copy(dst)
+		return RenderResponse{Rendered: true}
 	}
-	return true, nil
+	dst.Content = fineValue
+	return RenderResponse{Rendered: true}
 }
 
-func (r *Renderer) WriteForeach(ctx RenderContext, node *Node) (bool, error) {
-	if !(node.TAttrs.Has(TForeach) && node.TAttrs.Has(TAs)) {
-		return false, nil
+func renderForeach(ctx RenderContext, src *Node, dst *Node) RenderResponse {
+	if !(src.TAttrs.Has(TForeach) && src.TAttrs.Has(TAs)) {
+		return RenderResponse{Pass: true}
 	}
-	each, err := Eval[any](ctx, node.TAttrs[TForeach])
+	each, err := Eval[any](ctx, src.TAttrs[TForeach])
 	if err != nil {
-		return false, err
+		return RenderResponse{Error: err}
 	}
 	var items []interface{}
 	switch reflect.TypeOf(each).Kind() {
@@ -100,48 +109,53 @@ func (r *Renderer) WriteForeach(ctx RenderContext, node *Node) (bool, error) {
 		}
 		break
 	default:
-		return false, errors.Errorf("invalid type for foreach: %v", reflect.TypeOf(each).Kind())
+		return RenderResponse{
+			Error: errors.Errorf("invalid type for foreach: %v", reflect.TypeOf(each).Kind()),
+		}
 	}
 	loopCtx := maps.Clone(ctx)
 	for idx, item := range items {
-		loopCtx[node.TAttrs[TAs]] = item
-		err := r.Write(node, func(node *Node) error {
-			rendered, err := r.WriteTOut(loopCtx, node)
-			if err != nil || rendered {
-				return err
-			}
-			for _, node := range node.Nodes {
-				if err := r.RenderNode(loopCtx, node); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
+		loopCtx[src.TAttrs[TAs]] = item
+		newNode := src.Clone()
+		delete(newNode.TAttrs, TAs)
+		delete(newNode.TAttrs, TForeach)
+		newChildNode, stop, err := render(loopCtx, newNode, newNode)
 		if err != nil {
-			return false, err
+			return RenderResponse{Error: err}
 		}
-		if idx < len(items)-1 {
-			newLineNode := &Node{
-				Name:    "::text",
-				Content: GetNodeIndent(node),
+		if stop {
+			break
+		}
+		if newChildNode == nil {
+			continue
+		}
+		parentNodes := &dst.Parent.Value().Nodes
+		if newChildNode.Name == "t" {
+			newChildNodesSize := len(newChildNode.Nodes)
+			if newChildNodesSize > 0 {
+				start := 1
+				end := newChildNodesSize
+				if idx == len(items)-1 {
+					end = newChildNodesSize - 1
+				}
+				*parentNodes = append(*parentNodes, newChildNode.Nodes[start:end]...)
 			}
-			if _, err := r.WriteCharData(newLineNode); err != nil {
-				return false, err
-			}
+		} else {
+			*parentNodes = append(*parentNodes, newChildNode)
 		}
 	}
-	return true, nil
+	return RenderResponse{Rendered: true}
 }
 
-func (r *Renderer) WriteAttr(ctx RenderContext, node *Node) (bool, error) {
-	for name, attr := range node.TAttrs {
+func renderAttr(ctx RenderContext, src *Node, dst *Node) error {
+	for name, attr := range src.TAttrs {
 		if !strings.HasPrefix(name, TAttr) {
 			continue
 		}
 		attrName := strings.Split(name, TAttr+"-")[1]
 		val, err := Eval[any](ctx, attr)
 		if err != nil {
-			return false, err
+			return err
 		}
 		var fineValue string
 		switch reflect.TypeOf(val).Kind() {
@@ -152,14 +166,14 @@ func (r *Renderer) WriteAttr(ctx RenderContext, node *Node) (bool, error) {
 			fineValue = fmt.Sprintf("%v", val)
 			break
 		default:
-			return false, errors.Errorf("invalid type for attr: %v", reflect.TypeOf(val).Kind())
+			return errors.Errorf("invalid type for attr: %v", reflect.TypeOf(val).Kind())
 		}
-		node.Attrs[attrName] = fineValue
+		dst.Attrs[attrName] = fineValue
 	}
-	return true, nil
+	return nil
 }
 
-func (r *Renderer) CheckTIf(ctx RenderContext, node *Node) (bool, error) {
+func checkTIf(ctx RenderContext, node *Node) (bool, error) {
 	attrValue, ok := node.TAttrs[TIf]
 	if !ok {
 		return true, nil
@@ -180,59 +194,108 @@ func (r *Renderer) CheckTIf(ctx RenderContext, node *Node) (bool, error) {
 	}
 }
 
-func (r *Renderer) Write(node *Node, bodyCB func(*Node) error) error {
-	if node.Name == "t" {
-		if err := bodyCB(node); err != nil {
-			return err
-		}
-		return nil
-	}
+func xmlWrite(encoder *xml.Encoder, node *Node, bodyCB func(*Node) error) error {
 	startElement := xml.StartElement{
 		Name: xml.Name{Local: node.Name},
 		Attr: QAttrs2Attrs(node.Attrs),
 	}
 	// Write start element
-	if err := r.Encoder.EncodeToken(startElement); err != nil {
+	if err := encoder.EncodeToken(startElement); err != nil {
 		return errors.WithStack(err)
 	}
 	if err := bodyCB(node); err != nil {
 		return err
 	}
 	// Write end element
-	if err := r.Encoder.EncodeToken(startElement.End()); err != nil {
+	if err := encoder.EncodeToken(startElement.End()); err != nil {
 		return errors.WithStack(err)
 	}
 	return nil
 }
 
-func (r *Renderer) RenderNode(ctx RenderContext, node *Node) error {
-	validCondition, err := r.CheckTIf(ctx, node)
-	if err != nil {
-		return err
+func render(ctx RenderContext, src *Node, parent *Node) (*Node, bool, error) {
+	if valid, err := checkTIf(ctx, src); err != nil || !valid {
+		if parent != nil {
+			normalizeTextNodeIndent(src, &Node{
+				Parent: weak.Make(parent),
+			})
+		}
+		return nil, true, err
 	}
-	if !validCondition {
-		if err := r.WriteCommentWithValue("::render: invisible"); err != nil {
+	currentNode := &Node{
+		Name:    src.Name,
+		Attrs:   src.Attrs,
+		Content: src.Content,
+		Nodes:   []*Node{},
+	}
+	if parent != nil {
+		currentNode.Parent = weak.Make(parent)
+	}
+	var response RenderResponse
+	response = renderForeach(ctx, src, currentNode)
+	if response.Error != nil {
+		return nil, true, response.Error
+	}
+	if response.Rendered {
+		return nil, false, nil
+	}
+	if err := renderAttr(ctx, src, currentNode); err != nil {
+		return nil, true, err
+	}
+	response = renderOut(ctx, src, currentNode)
+	if response.Error != nil {
+		return nil, true, response.Error
+	}
+	if response.Skip {
+		return nil, true, nil
+	}
+	if response.Rendered {
+		return currentNode, false, nil
+	}
+	for _, childNode := range src.Nodes {
+		node, stop, err := render(ctx, childNode, currentNode)
+		if err != nil {
+			return nil, true, err
+		}
+		if stop {
+			break
+		}
+		if node == nil {
+			continue
+		}
+		node.Parent = weak.Make(currentNode)
+		currentNode.Nodes = append(currentNode.Nodes, node)
+	}
+	return currentNode, false, nil
+}
+
+func Render(ctx RenderContext, src *Node) (*Node, error) {
+	node, _, err := render(ctx, src, nil)
+	return node, err
+}
+
+func renderString(encoder *xml.Encoder, root *Node) error {
+	if root.Name == "::text" {
+		if err := encoder.EncodeToken(xml.CharData(root.Content)); err != nil {
 			return err
 		}
 		return nil
 	}
-	if rendered, err := r.WriteCharData(node); err != nil || rendered {
-		return err
-	}
-	_, err = r.WriteAttr(ctx, node)
-	if err != nil {
-		return err
-	}
-	if rendered, err := r.WriteForeach(ctx, node); err != nil || rendered {
-		return err
-	}
-	err = r.Write(node, func(node *Node) error {
-		rendered, err := r.WriteTOut(ctx, node)
-		if err != nil || rendered {
+	if root.Name == "::comment" {
+		if err := encoder.EncodeToken(xml.Comment(root.Content)); err != nil {
 			return err
 		}
-		for _, srcNode := range node.Nodes {
-			if err := r.RenderNode(ctx, srcNode); err != nil {
+		return nil
+	}
+	err := xmlWrite(encoder, root, func(node *Node) error {
+		if node.Content != "" {
+			if err := encoder.EncodeToken(xml.CharData(root.Content)); err != nil {
+				return err
+			}
+			return nil
+		}
+		for _, childNode := range node.Nodes {
+			if err := renderString(encoder, childNode); err != nil {
 				return err
 			}
 		}
@@ -244,30 +307,23 @@ func (r *Renderer) RenderNode(ctx RenderContext, node *Node) error {
 	return nil
 }
 
-func Render(w io.Writer, root *Node, ctx RenderContext) error {
-	renderer := &Renderer{
-		Encoder: xml.NewEncoder(w),
-	}
+func RenderString(ctx RenderContext, src *Node) (value string, fErr error) {
+	w := &bytes.Buffer{}
+	encoder := xml.NewEncoder(w)
 	defer func() {
-		if err := renderer.Encoder.Close(); err != nil {
-			log.Printf("%+v", err)
+		if err := encoder.Close(); err != nil && fErr == nil {
+			fErr = err
 		}
 	}()
-	if err := renderer.RenderNode(ctx, root.Clone()); err != nil {
-		return err
+	root, err := Render(ctx, src)
+	if err != nil {
+		return "", err
 	}
-	return nil
-}
-
-func RenderString(root *Node, ctx RenderContext) (string, error) {
-	w := &bytes.Buffer{}
-	if err := Render(w, root, ctx); err != nil {
+	if err := renderString(encoder, root); err != nil {
+		return "", err
+	}
+	if err := encoder.Flush(); err != nil {
 		return "", err
 	}
 	return w.String(), nil
-}
-
-func RemoveComment(data string) string {
-	pattern := regexp.MustCompile(`\n( +)?<!--.*?-->`)
-	return pattern.ReplaceAllString(data, "")
 }

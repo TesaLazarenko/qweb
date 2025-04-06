@@ -35,7 +35,7 @@ func compareOutput(t *testing.T, asset *Asset, val string) {
 	}
 }
 
-func render(t *testing.T, name string, ctx *RenderContext, comment bool) bool {
+func testRender(t *testing.T, name string, ctx *RenderContext) bool {
 	asset := readTestAsset(name)
 	inpBuffer := bytes.NewBufferString(asset.Template)
 	rootNode := new(Node)
@@ -43,13 +43,10 @@ func render(t *testing.T, name string, ctx *RenderContext, comment bool) bool {
 		t.Errorf("%+v", err)
 		return false
 	}
-	out, err := RenderString(rootNode, *ctx)
+	out, err := RenderString(*ctx, rootNode)
 	if err != nil {
 		t.Errorf("%+v", err)
 		return false
-	}
-	if !comment {
-		out = RemoveComment(out)
 	}
 	compareOutput(t, asset, out)
 	return true
@@ -61,19 +58,19 @@ func TestRender(t *testing.T) {
 			"value":      "Test",
 			"emptyValue": "",
 		}
-		render(t, "t-out", ctx, false)
+		testRender(t, "t-out", ctx)
 	})
 	t.Run("t-if", func(t *testing.T) {
 		ctx := &RenderContext{
 			"show":  true,
 			"items": []string{"a", "b"},
 		}
-		render(t, "t-if", ctx, false)
+		testRender(t, "t-if", ctx)
 	})
 	t.Run("t-foreach", func(t *testing.T) {
 		ctx := &RenderContext{
 			"items": []interface{}{"a", "b", "c"},
 		}
-		render(t, "t-foreach", ctx, false)
+		testRender(t, "t-foreach", ctx)
 	})
 }

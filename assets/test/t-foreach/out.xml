@@ -1,10 +1,9 @@
 <data>
+    abc
     <ul>
         <li>a</li>
         <li>b</li>
         <li>c</li>
     </ul>
-    <span>a</span>
-    <span>b</span>
-    <span>c</span>
+    <span>a</span><span>b</span><span>c</span>
 </data>
