@@ -2,7 +2,9 @@
     <span t-if="show">
         hello
     </span>
+    <t t-if="show">hello 2</t>
     <span t-if="not(show)">
         boo
     </span>
+    <t t-if="show"><span>boo</span></t>
 </data>

@@ -17,6 +17,7 @@ const (
 	TAs      = "t-as"
 	TIf      = "t-if"
 	TAttr    = "t-att"
+	TBR      = "t-break-line"
 )
 
 type RenderContext map[string]any
@@ -28,38 +29,15 @@ type RenderResponse struct {
 	Error    error
 }
 
-func normalizeTextNodeIndent(src *Node, dst *Node) {
-	if src == nil {
-		return
-	}
-	if dst == nil {
-		return
-	}
-	srcNodes := src.Parent.Value().Nodes
-	dstNodes := dst.Parent.Value().Nodes
-	if !(len(srcNodes) > 0 && len(dstNodes) > 0) {
-		return
-	}
-	lastSrcNode := srcNodes[len(srcNodes)-1]
-	lastDstNode := dstNodes[len(dstNodes)-1]
-	if lastSrcNode.Name == "::text" && lastDstNode.Name == "::text" {
-		dstNodes[len(dstNodes)-1].Content = lastSrcNode.Content
-	}
-}
-
-func renderOut(ctx RenderContext, src *Node, dst *Node) RenderResponse {
+func renderOut(ctx RenderContext, src *Node, dst *Node) (bool, error) {
 	attrValue, ok := src.TAttrs[TOut]
 	if !ok {
-		return RenderResponse{
-			Pass: true,
-		}
+		return false, nil
 	}
 	var fineValue string
 	val, err := Eval[any](ctx, attrValue)
 	if err != nil {
-		return RenderResponse{
-			Error: err,
-		}
+		return false, err
 	}
 	if reflect.TypeOf(val).Kind() == reflect.String {
 		fineValue = val.(string)
@@ -67,14 +45,13 @@ func renderOut(ctx RenderContext, src *Node, dst *Node) RenderResponse {
 		fineValue = fmt.Sprintf("%v", val)
 	}
 	if fineValue == "" && src.Name == "t" {
-		normalizeTextNodeIndent(src, dst)
-		return RenderResponse{
-			Skip: true,
-		}
-	} else if fineValue == "" {
-		return RenderResponse{
-			Pass: true,
-		}
+		emptyNode := &Node{Name: "::text"}
+		emptyNode.Copy(dst)
+		RemoveLineBreak(dst.Parent.Value())
+		return false, nil
+	}
+	if fineValue == "" {
+		return false, nil
 	}
 	if src.Name == "t" {
 		newNode := &Node{
@@ -82,19 +59,27 @@ func renderOut(ctx RenderContext, src *Node, dst *Node) RenderResponse {
 			Content: fineValue,
 		}
 		newNode.Copy(dst)
-		return RenderResponse{Rendered: true}
+		return true, nil
 	}
 	dst.Content = fineValue
-	return RenderResponse{Rendered: true}
+	return true, nil
 }
 
-func renderForeach(ctx RenderContext, src *Node, dst *Node) RenderResponse {
+func renderForeach(ctx RenderContext, src *Node, dst *Node) (bool, error) {
 	if !(src.TAttrs.Has(TForeach) && src.TAttrs.Has(TAs)) {
-		return RenderResponse{Pass: true}
+		return false, nil
 	}
+	var err error
+	var useBR bool
 	each, err := Eval[any](ctx, src.TAttrs[TForeach])
 	if err != nil {
-		return RenderResponse{Error: err}
+		return false, err
+	}
+	if src.TAttrs.Has(TBR) {
+		useBR, err = Eval[bool](ctx, src.TAttrs[TBR])
+		if err != nil {
+			return false, err
+		}
 	}
 	var items []interface{}
 	switch reflect.TypeOf(each).Kind() {
@@ -109,9 +94,7 @@ func renderForeach(ctx RenderContext, src *Node, dst *Node) RenderResponse {
 		}
 		break
 	default:
-		return RenderResponse{
-			Error: errors.Errorf("invalid type for foreach: %v", reflect.TypeOf(each).Kind()),
-		}
+		return false, errors.Errorf("invalid type for foreach: %v", reflect.TypeOf(each).Kind())
 	}
 	loopCtx := maps.Clone(ctx)
 	for idx, item := range items {
@@ -119,32 +102,27 @@ func renderForeach(ctx RenderContext, src *Node, dst *Node) RenderResponse {
 		newNode := src.Clone()
 		delete(newNode.TAttrs, TAs)
 		delete(newNode.TAttrs, TForeach)
-		newChildNode, stop, err := render(loopCtx, newNode, newNode)
+		newChildNode, err := render(loopCtx, newNode, newNode)
 		if err != nil {
-			return RenderResponse{Error: err}
-		}
-		if stop {
-			break
+			return false, err
 		}
 		if newChildNode == nil {
 			continue
 		}
 		parentNodes := &dst.Parent.Value().Nodes
 		if newChildNode.Name == "t" {
-			newChildNodesSize := len(newChildNode.Nodes)
-			if newChildNodesSize > 0 {
-				start := 1
-				end := newChildNodesSize
-				if idx == len(items)-1 {
-					end = newChildNodesSize - 1
-				}
-				*parentNodes = append(*parentNodes, newChildNode.Nodes[start:end]...)
-			}
+			*parentNodes = append(*parentNodes, newChildNode.Nodes...)
 		} else {
 			*parentNodes = append(*parentNodes, newChildNode)
 		}
+		if idx != len(items)-1 && useBR {
+			brNode := &Node{Name: "::text", Content: GetNodeIndent(src)}
+			*parentNodes = append(*parentNodes, brNode)
+		}
 	}
-	return RenderResponse{Rendered: true}
+	emptyNode := &Node{Name: "::text"}
+	emptyNode.Copy(dst)
+	return true, nil
 }
 
 func renderAttr(ctx RenderContext, src *Node, dst *Node) error {
@@ -194,7 +172,64 @@ func checkTIf(ctx RenderContext, node *Node) (bool, error) {
 	}
 }
 
+func render(ctx RenderContext, src *Node, parent *Node) (*Node, error) {
+	if valid, err := checkTIf(ctx, src); err != nil || !valid {
+		RemoveLineBreak(parent)
+		return nil, err
+	}
+	currentNode := &Node{
+		Name:    src.Name,
+		Attrs:   src.Attrs,
+		Content: src.Content,
+		Nodes:   []*Node{},
+	}
+	if parent != nil {
+		currentNode.Parent = weak.Make(parent)
+	}
+	var rendered bool
+	var err error
+	rendered, err = renderForeach(ctx, src, currentNode)
+	if err != nil {
+		return nil, err
+	}
+	if rendered {
+		return currentNode, nil
+	}
+	if err := renderAttr(ctx, src, currentNode); err != nil {
+		return nil, err
+	}
+	rendered, err = renderOut(ctx, src, currentNode)
+	if err != nil {
+		return nil, err
+	}
+	if rendered {
+		return currentNode, nil
+	}
+	for _, childNode := range src.Nodes {
+		node, err := render(ctx, childNode, currentNode)
+		if err != nil {
+			return nil, err
+		}
+		if node == nil {
+			continue
+		}
+		if node.Name == "t" {
+			currentNode.Nodes = append(currentNode.Nodes, node.Nodes...)
+		} else {
+			currentNode.Nodes = append(currentNode.Nodes, node)
+		}
+	}
+	return currentNode, nil
+}
+
+func Render(ctx RenderContext, src *Node) (*Node, error) {
+	return render(ctx, src, nil)
+}
+
 func xmlWrite(encoder *xml.Encoder, node *Node, bodyCB func(*Node) error) error {
+	// if node.Name == "t" {
+	// 	return bodyCB(node)
+	// }
 	startElement := xml.StartElement{
 		Name: xml.Name{Local: node.Name},
 		Attr: QAttrs2Attrs(node.Attrs),
@@ -211,67 +246,6 @@ func xmlWrite(encoder *xml.Encoder, node *Node, bodyCB func(*Node) error) error 
 		return errors.WithStack(err)
 	}
 	return nil
-}
-
-func render(ctx RenderContext, src *Node, parent *Node) (*Node, bool, error) {
-	if valid, err := checkTIf(ctx, src); err != nil || !valid {
-		if parent != nil {
-			normalizeTextNodeIndent(src, &Node{
-				Parent: weak.Make(parent),
-			})
-		}
-		return nil, true, err
-	}
-	currentNode := &Node{
-		Name:    src.Name,
-		Attrs:   src.Attrs,
-		Content: src.Content,
-		Nodes:   []*Node{},
-	}
-	if parent != nil {
-		currentNode.Parent = weak.Make(parent)
-	}
-	var response RenderResponse
-	response = renderForeach(ctx, src, currentNode)
-	if response.Error != nil {
-		return nil, true, response.Error
-	}
-	if response.Rendered {
-		return nil, false, nil
-	}
-	if err := renderAttr(ctx, src, currentNode); err != nil {
-		return nil, true, err
-	}
-	response = renderOut(ctx, src, currentNode)
-	if response.Error != nil {
-		return nil, true, response.Error
-	}
-	if response.Skip {
-		return nil, true, nil
-	}
-	if response.Rendered {
-		return currentNode, false, nil
-	}
-	for _, childNode := range src.Nodes {
-		node, stop, err := render(ctx, childNode, currentNode)
-		if err != nil {
-			return nil, true, err
-		}
-		if stop {
-			break
-		}
-		if node == nil {
-			continue
-		}
-		node.Parent = weak.Make(currentNode)
-		currentNode.Nodes = append(currentNode.Nodes, node)
-	}
-	return currentNode, false, nil
-}
-
-func Render(ctx RenderContext, src *Node) (*Node, error) {
-	node, _, err := render(ctx, src, nil)
-	return node, err
 }
 
 func renderString(encoder *xml.Encoder, root *Node) error {

@@ -5,15 +5,13 @@ import (
 	"github.com/casbin/govaluate"
 	"github.com/pkg/errors"
 	"regexp"
-	"strings"
 )
 
 func Eval[T any](ctx RenderContext, value string) (T, error) {
 	var zero T
 	functions := map[string]govaluate.ExpressionFunction{
 		"NewLine": func(arguments ...interface{}) (interface{}, error) {
-			buff := make([]string, int(arguments[0].(float64)))
-			return strings.Join(buff, "\n"), nil
+			return "\n", nil
 		},
 		"not": func(arguments ...interface{}) (interface{}, error) {
 			return !arguments[0].(bool), nil
@@ -44,9 +42,6 @@ func QAttrs2Attrs(input Attrs) []xml.Attr {
 func GetNodeIndent(node *Node) string {
 	items := node.Parent.Value().Nodes
 	for idx, n := range items {
-		if idx < 1 {
-			continue
-		}
 		if n != node {
 			continue
 		}
@@ -54,7 +49,7 @@ func GetNodeIndent(node *Node) string {
 		if !(prevNode.Name == "::text" && prevNode.Content != "") {
 			continue
 		}
-		pattern := regexp.MustCompile(`(\n\s+)$`)
+		pattern := regexp.MustCompile(`(\n +)`)
 		match := pattern.FindStringSubmatch(prevNode.Content)
 		if len(match) != 2 {
 			continue
@@ -62,4 +57,27 @@ func GetNodeIndent(node *Node) string {
 		return match[1]
 	}
 	return ""
+}
+
+func RemoveLineBreak(node *Node) bool {
+	nodes := &node.Nodes
+	nodesSize := len(*nodes)
+	if nodesSize == 0 {
+		return false
+	}
+	lastNode := (*nodes)[nodesSize-1]
+	if IsLineBreakNode(lastNode) {
+		*nodes = node.Nodes[:nodesSize-1]
+		return true
+	}
+	return false
+}
+
+func IsLineBreakNode(node *Node) bool {
+	isText := node.Name == "::text"
+	if !isText {
+		return false
+	}
+	pattern := regexp.MustCompile(`\n +`)
+	return pattern.MatchString(node.Content)
 }
