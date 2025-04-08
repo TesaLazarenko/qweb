@@ -226,10 +226,10 @@ func Render(ctx RenderContext, src *Node) (*Node, error) {
 	return render(ctx, src, nil)
 }
 
-func xmlWrite(encoder *xml.Encoder, node *Node, bodyCB func(*Node) error) error {
-	// if node.Name == "t" {
-	// 	return bodyCB(node)
-	// }
+func xmlWrite(encoder *xml.Encoder, node *Node, bodyCB func() error) error {
+	if node.Name == "t" {
+		return bodyCB()
+	}
 	startElement := xml.StartElement{
 		Name: xml.Name{Local: node.Name},
 		Attr: QAttrs2Attrs(node.Attrs),
@@ -238,7 +238,7 @@ func xmlWrite(encoder *xml.Encoder, node *Node, bodyCB func(*Node) error) error 
 	if err := encoder.EncodeToken(startElement); err != nil {
 		return errors.WithStack(err)
 	}
-	if err := bodyCB(node); err != nil {
+	if err := bodyCB(); err != nil {
 		return err
 	}
 	// Write end element
@@ -261,14 +261,14 @@ func renderString(encoder *xml.Encoder, root *Node) error {
 		}
 		return nil
 	}
-	err := xmlWrite(encoder, root, func(node *Node) error {
-		if node.Content != "" {
+	err := xmlWrite(encoder, root, func() error {
+		if root.Content != "" {
 			if err := encoder.EncodeToken(xml.CharData(root.Content)); err != nil {
 				return err
 			}
 			return nil
 		}
-		for _, childNode := range node.Nodes {
+		for _, childNode := range root.Nodes {
 			if err := renderString(encoder, childNode); err != nil {
 				return err
 			}

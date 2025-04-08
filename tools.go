@@ -49,9 +49,9 @@ func GetNodeIndent(node *Node) string {
 		if !(prevNode.Name == "::text" && prevNode.Content != "") {
 			continue
 		}
-		pattern := regexp.MustCompile(`(\n +)`)
+		pattern := regexp.MustCompile(`(\n( +)?)`)
 		match := pattern.FindStringSubmatch(prevNode.Content)
-		if len(match) != 2 {
+		if len(match) != 3 {
 			continue
 		}
 		return match[1]
@@ -78,6 +78,6 @@ func IsLineBreakNode(node *Node) bool {
 	if !isText {
 		return false
 	}
-	pattern := regexp.MustCompile(`\n +`)
+	pattern := regexp.MustCompile(`\n( +)?`)
 	return pattern.MatchString(node.Content)
 }
