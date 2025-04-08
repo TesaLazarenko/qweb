@@ -13,7 +13,7 @@ type Asset struct {
 }
 
 func readTestAsset(name string) *Asset {
-	out, err := os.ReadFile(fmt.Sprintf("./assets/test/%s/out.xml", name))
+	out, err := os.ReadFile(fmt.Sprintf("./assets/test/%s/out.txt", name))
 	if err != nil {
 		panic(err)
 	}
@@ -72,5 +72,14 @@ func TestRender(t *testing.T) {
 			"items": []interface{}{"a", "b", "c"},
 		}
 		testRender(t, "t-foreach", ctx)
+	})
+	t.Run("complex_1", func(t *testing.T) {
+		ctx := &RenderContext{
+			"value":      "Test",
+			"emptyValue": "",
+			"show":       true,
+			"items":      []interface{}{"a", "b", "c"},
+		}
+		testRender(t, "complex_1", ctx)
 	})
 }
