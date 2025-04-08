@@ -75,10 +75,16 @@ func TestRender(t *testing.T) {
 	})
 	t.Run("complex_1", func(t *testing.T) {
 		ctx := &RenderContext{
+			"name":       "Tesa",
 			"value":      "Test",
 			"emptyValue": "",
 			"show":       true,
 			"items":      []interface{}{"a", "b", "c"},
+			"::functions": map[string]ExpressionFunction{
+				"say_my_name": func(args ...any) (any, error) {
+					return args[0].(string), nil
+				},
+			},
 		}
 		testRender(t, "complex_1", ctx)
 	})

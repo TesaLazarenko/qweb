@@ -4,18 +4,25 @@ import (
 	"encoding/xml"
 	"github.com/casbin/govaluate"
 	"github.com/pkg/errors"
+	"maps"
 	"regexp"
 )
 
+type ExpressionFunction = govaluate.ExpressionFunction
+
+var evalFunctions = map[string]ExpressionFunction{
+	"not": func(arguments ...interface{}) (interface{}, error) {
+		return !arguments[0].(bool), nil
+	},
+}
+
 func Eval[T any](ctx RenderContext, value string) (T, error) {
 	var zero T
-	functions := map[string]govaluate.ExpressionFunction{
-		"NewLine": func(arguments ...interface{}) (interface{}, error) {
-			return "\n", nil
-		},
-		"not": func(arguments ...interface{}) (interface{}, error) {
-			return !arguments[0].(bool), nil
-		},
+	functions := make(map[string]ExpressionFunction)
+	maps.Copy(functions, evalFunctions)
+	externalFunctions, ok := ctx["::functions"].(map[string]ExpressionFunction)
+	if ok {
+		maps.Insert(functions, maps.All(externalFunctions))
 	}
 	expr, err := govaluate.NewEvaluableExpressionWithFunctions(value, functions)
 	if err != nil {

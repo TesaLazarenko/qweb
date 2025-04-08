@@ -10,4 +10,5 @@
 <span t-out="item" t-att-name="value"/>
 </t>
 </t>
+<span t-out="say_my_name(name)"/>
 </data>
